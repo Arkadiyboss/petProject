@@ -48,7 +48,7 @@ func PingDB(Pool *pgxpool.Pool) {
 			if err != nil {
 				fmt.Println("Не смог перевести байты в лог")
 			}
-			ConnectDB("postgres://arkadiy:123@localhost:5432/grandFatherBase?sslmode=disable")
+			ConnectDB("postgres://arkadiy:123@localhost:5432/mydb?sslmode=disable")
 		}
 	}
 }
