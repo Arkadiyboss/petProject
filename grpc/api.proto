@@ -1,0 +1,6 @@
+syntax ="proto3";
+
+service Auth {
+    rpc Login(LoginRequest) returns (ResponseToken)
+    rpc Verify(TokenRequest) return ()
+}
