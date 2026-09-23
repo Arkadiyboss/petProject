@@ -12,7 +12,7 @@ func main() {
 
 	config := config.LoadConfig()
 
-	connString := fmt.Sprint(config.Db.Adress + ":" + config.Secret.DbSecret + "@localhost" + config.Db.Port + "/mydb?sslmode=" + config.Db.Sslmode)
+	connString := fmt.Sprint(config.Db.Adress + ":" + config.Secret.DbSecret + "@db" + config.Db.Port + "/mydb?sslmode=" + config.Db.Sslmode)
 
 	fmt.Println(connString)
 
