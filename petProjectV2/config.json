@@ -1,0 +1,16 @@
+{
+  "db": {
+    "adress": "postgres://postgres",
+    "port": ":5432",
+    "sslmode": "disable"
+  },
+  "server": {
+    "port": ":8080"
+  },
+  "jwt": {
+    "lenghtPass": 48
+  },
+  "password": {
+    "key": "0123456789abcdef0123456789abcdef"
+  }
+}
