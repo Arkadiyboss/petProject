@@ -1,54 +1,95 @@
-package database
+package pkg
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type LogInfo struct {
-	Error error     `json:"error"`
-	Time  time.Time `json:"time"`
+func FindOrdinaryInt(query string, value any, pool *pgxpool.Pool) (int, error){
+
+	var res int
+
+	err := pool.QueryRow(context.Background(), query, value).Scan(&res)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, err
+		}
+		return 0, err
+	}
+	return res, nil
 }
 
-func ConnectDB(connStr string) (*pgxpool.Pool, error) {
+func FindOrdinaryString(query string, value any, pool *pgxpool.Pool) (string, error){
 
-	Pool, err := pgxpool.New(context.Background(), connStr)
+	var res string
 
+	err := pool.QueryRow(context.Background(), query, value).Scan(&res)
 	if err != nil {
-		fmt.Println("Не получается подключиться к БД", err)
-		return Pool, err
+		if err == pgx.ErrNoRows {
+			return "", err
+		}
+		return "0", err
 	}
-
-	err = Pool.Ping(context.Background())
-	if err != nil {
-		fmt.Println("Не получается подключиться к БД", err)
-		return Pool, err
-
-	}
-
-	return Pool, err
+	return res, nil
 }
 
-func PingDB(Pool *pgxpool.Pool, connString string) {
+func FindMany() {
 
-	timer := time.NewTicker(1 * time.Minute)
-	defer timer.Stop()
+}
 
-	for range timer.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := Pool.Ping(ctx)
-		cancel()
+func RegisterUser(login string, envPass string, pool *pgxpool.Pool) (int, error){
+
+	query := `INSERT INTO users (login, "passwordHash") VALUES ($1, $2) RETURNING id`
+
+		var id int
+
+		err := pool.QueryRow(
+			context.Background(),
+			query,
+			login,
+			envPass,
+		).Scan(&id)
 
 		if err != nil {
-			_, err := json.Marshal(Pool)
-			if err != nil {
-				fmt.Println("Не смог перевести байты в лог")
-			}
-			ConnectDB(connString)
+			return 0, err
 		}
+
+		return id, nil
+}
+
+func UpdateSession(access string, id int, pool *pgxpool.Pool) bool {
+
+	query := `INSERT INTO session (access_token, user_id) VALUES ($1, $2)`
+
+		_, err := pool.Exec(
+			context.Background(),
+			query,
+			access,
+			id,
+		)
+
+		if err != nil {
+			return false
+		}
+		return true
+}
+
+func VerifyToken(token string, pool *pgxpool.Pool) (string, string, int){
+
+	var dbLogin string
+	var dbPass string
+
+	query := `SELECT login, "passwordHash" from users u JOIN session s ON u.id = s.user_id  WHERE access_token = $1`
+
+	err := pool.QueryRow(context.Background(), query, token).Scan(&dbLogin, &dbPass)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", "", 404
+		}
+		return "", "", 5005
 	}
+
+	return dbLogin, dbPass, 0
 }

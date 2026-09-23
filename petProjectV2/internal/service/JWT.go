@@ -1,22 +1,47 @@
 package auth
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"petProjectV2/config"
 	"strings"
 	"time"
 
 	pass "petProjectV2/internal/service/password"
+	"petProjectV2/pkg"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// 4001 - Неверный метод запроса
+// 4002 - Login не заполнен
+// 4003 - Password не заполнен
+// 4004 - Пользователь уже существует
+// 4005 - Неверный пароль пользователя
+// 4006 - Авторизационный токен пустой
+// 4007 - Токен истек, залогиньтесь заново
+// 5001 - Ошибка парсинга логина и пароля
+// 5002 - Ошибка при шифровании пароля
+// 5003 - Ошибка записи в БД
+// 5004 - Ошибка при создании токена
+// 5005 - Ошибка при попытке поиска токена
+// 5006 - Ошибка при попытке обновления токена
+// 5007 - Ошибка парсинга входящего токена
+
+type UserService interface {
+    UserRegister(login, password string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int)
+    UserLogin(login, password string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int)
+    Verify(token string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int)
+}
+
+type RequestResult struct {
+    Message string
+    AccessToken   string
+	RefreshToken   string
+}
 
 type Token struct {
 	Login    string `json:"login"`
@@ -24,197 +49,40 @@ type Token struct {
 	jwt.RegisteredClaims
 }
 
-func LoginPassword(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, config *config.Config, number int) {
 
-	if r.Method != http.MethodGet {
-		http.Error(w, "Неверный метод запроса", 400)
-		return
-	}
+func (req *RequestResult) Verify(token string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int) {
 
-	login, password, ok := r.BasicAuth()
+	valid, errCode := DecodeAccessToken(token)
 
-	if !ok {
-		http.Error(w, "Ошибка парсинга логина и пароля", 500)
-		return
-	}
-
-	if login == "" {
-		http.Error(w, "Login не заполнен", 400)
-		return
-	}
-	if password == "" {
-		http.Error(w, "Password не заполнен", 400)
-		return
-	}
-
-	id, dbPass := CheckDB(w, login, pool, number)
-
-	switch number {
-	case 1:
-		if id != 0 {
-			errorText := fmt.Sprint("Пользователь уже существует с айди: ", id)
-			http.Error(w, errorText, 400)
-			return
-		}
-
-		envPass, err := pass.EncryptPass(password, config)
-
-		if err != nil {
-			http.Error(w, "Ошибка при шифровании пароля", 500)
-			return
-		}
-
-		query := `INSERT INTO users (login, "passwordHash") VALUES ($1, $2) RETURNING id`
-
-		var id int
-
-		err = pool.QueryRow(
-			context.Background(),
-			query,
-			login,
-			envPass,
-		).Scan(&id)
-
-		if err != nil {
-			http.Error(w, "Ошибка записи в БД", 500)
-			return
-		}
-
-		successText := fmt.Sprint("Пользователь успешно создан, его айди: ", id)
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(successText)
-
-	case 2:
-		if id == 0 {
-			http.Error(w, "Пользователь не найден", 404)
-			return
-		}
-
-		decryptPass, err := pass.DecryptPass(dbPass, config)
-
-		if err != nil {
-			http.Error(w, "Ошибка расшифровки пароля", 400)
-			return
-		}
-
-		if password != decryptPass {
-			http.Error(w, "Неверный пароль", 400)
-			return
-		}
-
-		refresh := RefreshToken(config)
-
-		access, err := AccessToken(login, dbPass, config)
-
-		if err != nil {
-			http.Error(w, "Ошибка при создании токена", 500)
-			return
-		}
-
-		query := `INSERT INTO session (access_token, user_id) VALUES ($1, $2)`
-
-		_, err = pool.Exec(
-			context.Background(),
-			query,
-			access,
-			id,
-		)
-
-		if err != nil {
-			http.Error(w, "Ошибка записи токена в БД", 500)
-			return
-		}
-
-		w.Header().Set("Authorization", access)
-		w.Header().Set("Allow", refresh)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode("Токен успешно создан")
-	}
-
-}
-
-func Verify(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, config *config.Config) {
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "Неверный метод запроса", 400)
-		return
-	}
-
-	token := r.Header.Get("Authorization")
-
-	if token == "" {
-		http.Error(w, "Авторизационный токен пустой", 400)
-		return
-	}
-
-	valid, err := DecodeAccessToken(token)
-
-	if err != nil {
-		http.Error(w, "Ошибка декодирования токена", 500)
-		return
+	if errCode != 0 {
+		return nil, errCode
 	}
 
 	if !valid {
-		http.Error(w, "Токен истек, залогинтесь заново", 403)
-		return
+		return nil, 4007
 	}
 
 	var dbLogin string
 	var dbPass string
 
-	query := `SELECT login, "passwordHash" from users u JOIN session s ON u.id = s.user_id  WHERE access_token = $1`
+	dbLogin, dbPass, errCode = pkg.VerifyToken(token, pool)
 
-	err = pool.QueryRow(context.Background(), query, token).Scan(&dbLogin, &dbPass)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			http.Error(w, "Пользователь не найден", 404)
-		}
-		http.Error(w, "Ошибка при попытке поиска токена", 500)
+	if errCode != 0 {
+		return nil, errCode
 	}
 
-	updatedTimeToken, err := AccessToken(dbLogin, dbPass, config)
+	updatedTimeToken, errCode := AccessToken(dbLogin, dbPass, config)
 
-	if err != nil {
-		http.Error(w, "Ошибка обновления токена", 403)
-		return
+	if errCode != 0 {
+		return nil, errCode
 	}
 
-	w.Header().Set("Authorization", updatedTimeToken)
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode("Токен успешно создан")
+	return &RequestResult{
+	AccessToken: updatedTimeToken,}, errCode
 
 }
 
-func CheckDB(w http.ResponseWriter, login string, pool *pgxpool.Pool, number int) (int, string) {
-
-	var id int
-
-	query := `Select id From users Where "login" = $1`
-
-	err := pool.QueryRow(context.Background(), query, login).Scan(&id)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return 0, ""
-		}
-		return 0, ""
-	}
-
-	var dbPass string
-	query = `Select "passwordHash" From users Where "login" = $1`
-
-	err = pool.QueryRow(context.Background(), query, login).Scan(&dbPass)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return 0, ""
-		}
-		return 0, ""
-	}
-
-	return id, dbPass
-}
-
-func AccessToken(login, password string, config *config.Config) (string, error) {
+func AccessToken(login, password string, config *config.Config) (string, int) {
 	claims := Token{
 		Login:     login,
 		Password:  password,
@@ -226,20 +94,20 @@ func AccessToken(login, password string, config *config.Config) (string, error) 
 	tokenString, err := token.SignedString([]byte(config.Secret.JwtSecret))
 
 	if err != nil {
-		return "", err
+		return "", 5004
 	}
 
-	return tokenString, nil
+	return tokenString, 0
 }
 
-func DecodeAccessToken(pass string) (bool, error) {
+func DecodeAccessToken(pass string) (bool, int) {
 
 	part := strings.Split(pass, ".")
 
 	body, err := base64.RawURLEncoding.DecodeString(part[1])
 
 	if err != nil {
-		return false, err
+		return false, 5007
 	}
 
 	var info map[string]interface{}
@@ -247,16 +115,16 @@ func DecodeAccessToken(pass string) (bool, error) {
 	err = json.Unmarshal(body, &info)
 
 	if err != nil {
-		return false, err
+		return false, 5007
 	}
 
 	expired := info["exp"].(float64)
 
 	if time.Now().Unix() > int64(expired) {
-		return false, nil
+		return false, 5007
 	}
 
-	return true, nil
+	return true, 0
 
 }
 
@@ -268,4 +136,102 @@ func RefreshToken(config *config.Config) string {
 		pass = pass + avaliableSymbols[symbol]
 	}
 	return pass
+}
+
+func (r *RequestResult)UserRegister(login string, password string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int) {
+
+
+	query := `Select id From users Where "login" = $1`
+
+	id, err := pkg.FindOrdinaryInt(query, login, pool)
+
+	if err == nil {
+		return nil, 4004
+	}
+
+	if id != 0 {
+		return nil, 4004
+	}
+
+	envPass, err := pass.EncryptPass(password, config)
+
+	if err != nil {
+		return nil, 5002
+	}
+
+	id, err = pkg.RegisterUser(login, envPass, pool)
+
+	if err != nil {
+		return nil, 5003
+	}
+
+	successText := fmt.Sprint("Пользователь успешно создан, его айди: ", id)
+
+	accessToken, errCode := AccessToken(login, password, config)
+
+	if errCode != 0 {
+		return nil, 5003
+	}
+
+	return &RequestResult{Message: successText,
+		AccessToken: accessToken,}, 0
+}
+
+func (r *RequestResult)UserLogin(login string, password string, config *config.Config, pool *pgxpool.Pool) (*RequestResult, int) {
+
+
+	query := `Select id From users Where "login" = $1`
+
+	id, err := pkg.FindOrdinaryInt(query, login, pool)
+
+	if err != nil {
+		return nil, 404
+	}
+
+	query = `Select "passwordHash" From users Where "login" = $1`
+
+	dbPass, err := pkg.FindOrdinaryString(query, login, pool)
+
+	if err != nil {
+		return nil, 500
+	}
+
+	if id == 0 {
+		return nil, 404
+	}
+
+	pass, err := pass.DecryptPass(dbPass, config)
+
+	if err != nil {
+		return nil, 5002
+	}
+
+	if pass != password {
+		return nil, 4005
+	}
+
+	refresh := RefreshToken(config)
+
+	access, errCode := AccessToken(login, dbPass, config)
+
+	if errCode != 0 {
+		return nil, 5004
+	}
+
+	success := pkg.UpdateSession(access, id, pool)
+
+	if !success {
+		return nil, 5003
+	}
+
+	successText := "Логин выполнен успешно"
+
+	return &RequestResult{Message: successText,
+	AccessToken: access,
+	RefreshToken: refresh,}, 0
+
+}
+
+func NewRequest() (*RequestResult){
+	return &RequestResult{}
 }
