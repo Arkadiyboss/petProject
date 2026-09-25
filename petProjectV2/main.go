@@ -10,8 +10,6 @@ import (
 
 func main() {
 
-	fmt.Println(123321)
-
 	config := config.LoadConfig()
 
 	connString := fmt.Sprint(config.Db.Adress + ":" + config.Secret.DbSecret + "@db" + config.Db.Port + "/mydb?sslmode=" + config.Db.Sslmode)
