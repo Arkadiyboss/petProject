@@ -10,7 +10,7 @@ import (
 
 func main() {
 
-	fmt.Println(123)
+	fmt.Println(123321)
 
 	config := config.LoadConfig()
 
